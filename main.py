@@ -263,11 +263,13 @@ class TidyApp(tk.Tk):
     # ---------- UI updates ----------
 
     def _drain_events(self):
+        # Polled on the UI thread; the only place background events touch widgets
         try:
             while True:
                 kind, payload = self.events.get_nowait()
                 if kind == "moved":
                     self._add_log_row(payload)
+                # Ignore events from a watcher that was stopped before it finished starting
                 elif kind == "started" and payload is self.watcher:
                     self._set_state("watching")
                 elif kind == "failed" and payload[0] is self.watcher:
@@ -300,6 +302,7 @@ class TidyApp(tk.Tk):
             self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
 
     def _set_state(self, state):
+        # One place to keep the status, button and inputs consistent with each other
         watching_text = f"Watching {os.path.basename(self.path_var.get()) or self.path_var.get()}"
         text, dot, button_text, button_style, button_enabled, inputs_enabled = {
             "idle": ("Not running", COLORS["idle"], "Start sorting", "Accent.TButton", True, True),

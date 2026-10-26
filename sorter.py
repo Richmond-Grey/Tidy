@@ -37,6 +37,7 @@ def folder_for(filename: str) -> str:
 
 
 def should_skip(filename: str) -> bool:
+    """True for system files and unfinished downloads."""
     name = filename.lower()
     if name in IGNORED_NAMES:
         return True
