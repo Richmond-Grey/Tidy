@@ -1,191 +1,320 @@
+"""Desktop (Tkinter) front end for Tidy."""
 import os
-import time
+import queue
 import threading
-from watchdog.observers import Observer  # Used to observe changes in the file system
-from watchdog.events import FileSystemEventHandler  # Handles file system events
-import shutil  # For file manipulation (e.g., moving files)
-from tkinter import *  # GUI module
-from tkinter import messagebox  # For displaying alert messages in GUI
+import time
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
+
+from sorter import FolderWatcher, MoveResult
+
+COLORS = {
+    "bg": "#F4F3EF",
+    "surface": "#FFFFFF",
+    "border": "#E2E0DA",
+    "text": "#1D1C1A",
+    "muted": "#6E6B64",
+    "accent": "#2C6E5A",
+    "accent_active": "#23584A",
+    "danger": "#B3412E",
+    "danger_active": "#963524",
+    "watching": "#2E9D63",
+    "idle": "#B5B1A8",
+    "row_alt": "#FAF9F6",
+    "select": "#E3EEEA",
+}
 
 
-# Main class for managing the directory watcher
-class Watcher:
-    def __init__(self, directory):
-        # Initialize the watcher with the directory to monitor
-        self.DIRECTORY_TO_WATCH = directory
-        self.observer = Observer()  # Observer to track file system changes
-        self.log_labels = []  # Store log messages to display in the GUI
+def enable_high_dpi():
+    """Render crisp text on scaled Windows displays."""
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except (AttributeError, OSError):
+        pass
 
-        print(self.DIRECTORY_TO_WATCH)
 
-    def run(self):
-        # Starts the file system watcher
+class TidyApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Tidy")
+        self.configure(bg=COLORS["bg"])
+        self.minsize(640, 520)
+        self._center(760, 600)
+
+        self.watcher = None
+        self.events = queue.Queue()  # Background threads talk to the UI only through this
+        self.moved_count = 0
+        self.path_var = tk.StringVar()
+
+        self._setup_fonts()
+        self._setup_styles()
+        self._build()
+        self._set_state("idle")
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(100, self._drain_events)
+
+    # ---------- setup ----------
+
+    def _center(self, width, height):
+        x = (self.winfo_screenwidth() - width) // 2
+        y = (self.winfo_screenheight() - height) // 2
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _setup_fonts(self):
+        families = set(tkfont.families())
+        family = next((f for f in ("Segoe UI", "SF Pro Text", "Helvetica Neue", "Ubuntu")
+                       if f in families), tkfont.nametofont("TkDefaultFont").actual("family"))
+        for name in ("TkDefaultFont", "TkTextFont", "TkHeadingFont"):
+            tkfont.nametofont(name).configure(family=family, size=10)
+        self.fonts = {
+            "title": tkfont.Font(family=family, size=20, weight="bold"),
+            "section": tkfont.Font(family=family, size=11, weight="bold"),
+            "body": tkfont.Font(family=family, size=10),
+            "small": tkfont.Font(family=family, size=9),
+        }
+
+    def _setup_styles(self):
+        c = COLORS
+        style = ttk.Style(self)
+        style.theme_use("clam")
+
+        style.configure(".", background=c["bg"], foreground=c["text"], font=self.fonts["body"],
+                        bordercolor=c["border"], focuscolor=c["accent"])
+        style.configure("TFrame", background=c["bg"])
+        style.configure("Card.TFrame", background=c["surface"], relief="solid", borderwidth=1)
+        style.configure("TLabel", background=c["bg"], foreground=c["text"])
+        style.configure("Title.TLabel", font=self.fonts["title"])
+        style.configure("Muted.TLabel", foreground=c["muted"])
+        style.configure("Small.TLabel", foreground=c["muted"], font=self.fonts["small"])
+        style.configure("Card.TLabel", background=c["surface"])
+        style.configure("CardSection.TLabel", background=c["surface"], font=self.fonts["section"])
+        style.configure("CardMuted.TLabel", background=c["surface"], foreground=c["muted"])
+        style.configure("Section.TLabel", font=self.fonts["section"])
+
+        style.configure("TEntry", fieldbackground=c["surface"], bordercolor=c["border"],
+                        lightcolor=c["border"], darkcolor=c["border"], padding=(8, 6))
+        style.map("TEntry",
+                  bordercolor=[("focus", c["accent"])],
+                  lightcolor=[("focus", c["accent"])],
+                  fieldbackground=[("disabled", c["bg"])],
+                  foreground=[("disabled", c["muted"])])
+
+        button_common = dict(padding=(14, 7), borderwidth=1, focusthickness=0, relief="solid")
+        style.configure("TButton", background=c["surface"], foreground=c["text"],
+                        bordercolor=c["border"], lightcolor=c["border"], darkcolor=c["border"],
+                        **button_common)
+        style.map("TButton",
+                  background=[("disabled", c["bg"]), ("pressed", c["border"]), ("active", c["row_alt"])],
+                  foreground=[("disabled", c["muted"])])
+
+        for name, base, active in (("Accent", c["accent"], c["accent_active"]),
+                                   ("Danger", c["danger"], c["danger_active"])):
+            style.configure(f"{name}.TButton", background=base, foreground="#FFFFFF",
+                            bordercolor=base, lightcolor=base, darkcolor=base,
+                            font=self.fonts["section"], **button_common)
+            style.map(f"{name}.TButton",
+                      background=[("disabled", c["idle"]), ("pressed", active), ("active", active)],
+                      bordercolor=[("disabled", c["idle"]), ("active", active)],
+                      lightcolor=[("active", active)], darkcolor=[("active", active)])
+
+        row_height = self.fonts["body"].metrics("linespace") + 12
+        style.configure("Treeview", background=c["surface"], fieldbackground=c["surface"],
+                        foreground=c["text"], bordercolor=c["border"], borderwidth=0,
+                        rowheight=row_height)
+        style.map("Treeview", background=[("selected", c["select"])],
+                  foreground=[("selected", c["text"])])
+        style.configure("Treeview.Heading", background=c["surface"], foreground=c["muted"],
+                        font=self.fonts["small"], relief="flat", borderwidth=0, padding=(8, 6))
+        style.map("Treeview.Heading", background=[("active", c["surface"])])
+        style.configure("Vertical.TScrollbar", background=c["border"], troughcolor=c["surface"],
+                        bordercolor=c["surface"], arrowcolor=c["muted"], lightcolor=c["border"],
+                        darkcolor=c["border"], gripcount=0)
+
+    def _build(self):
+        root = ttk.Frame(self, padding=(24, 20, 24, 14))
+        root.pack(fill="both", expand=True)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(3, weight=1)
+
+        # Header
+        header = ttk.Frame(root)
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(header, text="Tidy", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(header, text="Moves each file into a folder named after its type, and keeps doing it as new files arrive.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
+
+        # Folder card
+        card = ttk.Frame(root, style="Card.TFrame", padding=16)
+        card.grid(row=1, column=0, sticky="ew", pady=(18, 0))
+        card.columnconfigure(0, weight=1)
+
+        ttk.Label(card, text="Folder to sort", style="CardSection.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        self.path_entry = ttk.Entry(card, textvariable=self.path_var)
+        self.path_entry.grid(row=1, column=0, sticky="ew", pady=(8, 0), ipady=2)
+        self.path_entry.bind("<Return>", lambda _e: self._toggle())
+        self.browse_button = ttk.Button(card, text="Browse…", command=self._browse)
+        self.browse_button.grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(8, 0))
+
+        status_row = tk.Frame(card, bg=COLORS["surface"])
+        status_row.grid(row=2, column=0, sticky="w", pady=(14, 0))
+        self.status_dot = tk.Canvas(status_row, width=10, height=10, bg=COLORS["surface"],
+                                    highlightthickness=0)
+        self.status_dot.pack(side="left")
+        self._dot = self.status_dot.create_oval(1, 1, 9, 9, outline="")
+        self.status_label = ttk.Label(status_row, style="CardMuted.TLabel")
+        self.status_label.pack(side="left", padx=(8, 0))
+
+        self.toggle_button = ttk.Button(card, command=self._toggle, width=16)
+        self.toggle_button.grid(row=2, column=1, sticky="e", padx=(8, 0), pady=(14, 0))
+
+        # Activity header
+        activity_header = ttk.Frame(root)
+        activity_header.grid(row=2, column=0, sticky="ew", pady=(22, 8))
+        ttk.Label(activity_header, text="Activity", style="Section.TLabel").pack(side="left")
+        self.count_label = ttk.Label(activity_header, style="Muted.TLabel")
+        self.count_label.pack(side="left", padx=(10, 0))
+        ttk.Button(activity_header, text="Clear", command=self._clear_log).pack(side="right")
+
+        # Activity log
+        log_card = ttk.Frame(root, style="Card.TFrame", padding=1)
+        log_card.grid(row=3, column=0, sticky="nsew")
+        log_card.columnconfigure(0, weight=1)
+        log_card.rowconfigure(0, weight=1)
+
+        self.log = ttk.Treeview(log_card, columns=("time", "file", "folder"), show="headings",
+                                selectmode="browse")
+        for column, heading, width, stretch in (("time", "TIME", 90, False),
+                                                ("file", "FILE", 300, True),
+                                                ("folder", "MOVED TO", 160, True)):
+            self.log.heading(column, text=heading, anchor="w")
+            self.log.column(column, width=width, minwidth=60, stretch=stretch, anchor="w")
+        self.log.tag_configure("alt", background=COLORS["row_alt"])
+        self.log.tag_configure("error", foreground=COLORS["danger"])
+        self.log.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(log_card, orient="vertical", command=self.log.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.log.configure(yscrollcommand=scrollbar.set)
+
+        self.empty_label = ttk.Label(log_card, style="CardMuted.TLabel",
+                                     text="Sorted files will show up here.")
+        self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Footer
+        ttk.Label(root, text="Made by Richmond", style="Small.TLabel").grid(
+            row=4, column=0, sticky="e", pady=(10, 0))
+
+        self._update_count()
+
+    # ---------- actions ----------
+
+    def _browse(self):
+        folder = filedialog.askdirectory(title="Choose a folder to sort",
+                                         initialdir=self.path_var.get() or os.path.expanduser("~"))
+        if folder:
+            self.path_var.set(os.path.normpath(folder))
+
+    def _toggle(self):
+        if self.watcher:
+            self._stop()
+            return
+
+        path = self.path_var.get().strip().strip('"')
+        if not path:
+            messagebox.showinfo("Choose a folder", "Pick a folder to sort first.", parent=self)
+            return
+        if not os.path.isdir(path):
+            messagebox.showerror("Folder not found", f"Couldn't find a folder at:\n{path}", parent=self)
+            return
+
+        self.path_var.set(os.path.normpath(path))
+        self.watcher = FolderWatcher(path, lambda result: self.events.put(("moved", result)))
+        self._set_state("starting")
+        threading.Thread(target=self._start_watcher, args=(self.watcher,), daemon=True).start()
+
+    def _start_watcher(self, watcher):
+        # Runs off the UI thread: the initial sort can take a while on big folders
         try:
-            event_handler = Handler(self.DIRECTORY_TO_WATCH, self.log_labels)
-            # Schedule the observer to monitor the directory
-            self.observer.schedule(event_handler, self.DIRECTORY_TO_WATCH, recursive=False)
-            self.observer.start()  # Start the observer
+            watcher.start()
+            self.events.put(("started", watcher))
+        except OSError as e:
+            self.events.put(("failed", (watcher, str(e))))
 
-            self.sort()  # Perform an initial sort on existing files
+    def _stop(self):
+        if self.watcher:
+            self.watcher.stop()
+            self.watcher = None
+        self._set_state("idle")
 
-            # Keep the program running to monitor changes
-            try:
-                while True:
-                    time.sleep(5)  # Check for changes every 5 seconds
-            except KeyboardInterrupt:
-                # Stop the observer if the program is interrupted
-                self.observer.stop()
-                print("Observer Stopped")
+    def _clear_log(self):
+        self.log.delete(*self.log.get_children())
+        self.moved_count = 0
+        self._update_count()
 
-            self.observer.join()  # Ensure observer thread joins properly
+    def _on_close(self):
+        if self.watcher:
+            self.watcher.stop()
+        self.destroy()
 
-        except FileNotFoundError:
-            # Handle invalid directory paths
-            messagebox.showerror("Fake Path", message="This full_path does not exist")
-            print("This full_path does not exist")
+    # ---------- UI updates ----------
 
-    def sort(self):
-        # Organizes files in the watched directory by their extensions
-        entries = os.listdir(self.DIRECTORY_TO_WATCH)
-        entries.sort()  # Sort files alphabetically
-        extensions = {}  # Placeholder for extension-based logic (currently unused)
-
-        for entry in entries:
-            full_path = os.path.join(self.DIRECTORY_TO_WATCH, entry)
-
-            if os.path.isfile(full_path):
-                try:
-                    ext = os.path.splitext(entry)[1][1:]  # Get file extension without the dot
-
-                    if ext == "":
-                        print("No extension")  # Handle files with no extensions
-
-                    directory = os.path.join(self.DIRECTORY_TO_WATCH, ext)
-
-                    # Create a subdirectory for the file extension if it doesn't exist
-                    if not os.path.exists(directory):
-                        os.makedirs(directory)
-
-                    # Move file to its respective directory
-                    file_destination = os.path.join(directory, entry)
-                    shutil.move(full_path, file_destination)
-
-                    # Log the operation in the GUI
-                    log = Label(windows, font=("Comic Sans", 15), bg="Sky Blue",
-                                text=f'Moved {entry} to {directory}/')
-                    log.pack()
-                    self.log_labels.append(log)
-
-                    print(f'Moved {entry} to {directory}/')
-
-                except Exception as e:
-                    # Catch any errors during the file operation
-                    print(f"Failed to process {entry}: {e}")
-
-    def clear(self):
-        # Clear all log labels from the GUI
-        for log in self.log_labels:
-            log.destroy()
-        self.log_labels.clear()  # Clear the list after destroying all labels
-
-
-# Event handler class for responding to file system events
-class Handler(FileSystemEventHandler):
-    def __init__(self, directory_to_watch, log_labels):
-        self.DIRECTORY_TO_WATCH = directory_to_watch
-        self.log_labels = log_labels
-
-    def on_created(self, event):
-        # Triggered when a new file or directory is created
-        print(f'Hey, {event.src_path} has been created!')
-
-        file_path = event.src_path
-        time.sleep(1)  # Delay to allow file writing to complete
-
-        self.sort(file_path)  # Organize the newly created file
-
-    def sort(self, filepath):
-        # Sort a single file by moving it to its corresponding directory
+    def _drain_events(self):
         try:
-            ext = os.path.splitext(filepath)[1][1:]  # Get file extension
+            while True:
+                kind, payload = self.events.get_nowait()
+                if kind == "moved":
+                    self._add_log_row(payload)
+                elif kind == "started" and payload is self.watcher:
+                    self._set_state("watching")
+                elif kind == "failed" and payload[0] is self.watcher:
+                    self.watcher = None
+                    self._set_state("idle")
+                    messagebox.showerror("Couldn't start sorting", payload[1], parent=self)
+        except queue.Empty:
+            pass
+        self.after(100, self._drain_events)
 
-            if ext == "":
-                print("It has no extension")
+    def _add_log_row(self, result: MoveResult):
+        name = os.path.basename(result.source)
+        if result.error:
+            folder, tags = f"Failed: {result.error}", ("error",)
+        else:
+            folder, tags = os.path.basename(os.path.dirname(result.destination)) + os.sep, ()
+            self.moved_count += 1
+        if len(self.log.get_children()) % 2:
+            tags += ("alt",)
+        row = self.log.insert("", "end", values=(time.strftime("%H:%M:%S"), name, folder), tags=tags)
+        self.log.see(row)
+        self._update_count()
 
-            directory = os.path.join(self.DIRECTORY_TO_WATCH, ext)
+    def _update_count(self):
+        n = self.moved_count
+        self.count_label.configure(text=f"{n} file{'s' if n != 1 else ''} sorted")
+        if self.log.get_children():
+            self.empty_label.place_forget()
+        else:
+            self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
 
-            # Create directory if it doesn't exist
-            if not os.path.exists(directory):
-                os.makedirs(directory)
-                print("It got the dir")
-
-            # Move the file to its designated directory
-            file_destination = os.path.join(directory, os.path.basename(filepath))
-            shutil.move(filepath, file_destination)
-
-            # Log the operation in the GUI
-            log = Label(windows, font=("Comic Sans", 15), bg="Sky Blue",
-                        text=f'Moved {os.path.basename(filepath)} to {directory}/')
-            log.pack()
-            self.log_labels.append(log)
-
-            print("It moved")
-
-        except Exception as e:
-            # Handle errors in file sorting
-            print(f"Failed to process {filepath}: {e}")
-
-    @staticmethod
-    def on_deleted(event):
-        # Triggered when a file or directory is deleted
-        print(f"Hey {event.src_path} has been deleted")
-
-
-# Function to start the file watcher
-def start_watcher():
-    directory = entry.get().replace('"', '')  # Get the directory full_path from the GUI input
-    if not os.path.exists(directory):
-        # Show an error if the full_path is invalid
-        messagebox.showerror("Invalid Path", "The full_path does not exist")
-        return
-    begin = Watcher(directory)
-
-    # Add a button to clear log messages
-    clear_button = Button(windows, font=("Comic Sans", 15), bg="Sky Blue", text="Clear",
-                          border=10, command=begin.clear, activeforeground="black", activebackground="Sky Blue")
-    clear_button.pack(side=TOP, anchor=NE)
-
-    # Run the watcher in a separate thread
-    watcher_thread = threading.Thread(target=begin.run)
-    watcher_thread.daemon = True  # Ensure the thread exits with the main program
-    watcher_thread.start()
+    def _set_state(self, state):
+        watching_text = f"Watching {os.path.basename(self.path_var.get()) or self.path_var.get()}"
+        text, dot, button_text, button_style, button_enabled, inputs_enabled = {
+            "idle": ("Not running", COLORS["idle"], "Start sorting", "Accent.TButton", True, True),
+            "starting": ("Sorting existing files…", COLORS["accent"], "Starting…", "Accent.TButton", False, False),
+            "watching": (watching_text, COLORS["watching"], "Stop", "Danger.TButton", True, False),
+        }[state]
+        self.status_label.configure(text=text)
+        self.status_dot.itemconfigure(self._dot, fill=dot)
+        self.toggle_button.configure(text=button_text, style=button_style,
+                                     state="normal" if button_enabled else "disabled")
+        input_state = "normal" if inputs_enabled else "disabled"
+        self.path_entry.configure(state=input_state)
+        self.browse_button.configure(state=input_state)
 
 
-# Main GUI setup
 if __name__ == "__main__":
-    windows = Tk()  # Create the main window
-    label = Label(windows, text="Enter DIR Path", font=("Comic Sans", 30), bg="sky blue")
-    label.pack()
-
-    entry = Entry(windows, width=50, border=100, bg="sky blue", font=("ink free", 20))
-    entry.pack()
-
-    sort = Button(windows, text="Sort", font=("comic sans", 15), bg="light blue", border=10,
-                  command=start_watcher, activeforeground="black", activebackground="light blue")
-    sort.pack()
-
-    credit = Label(windows, text="Made by Richmond", font=("Consolas", 10), bg="sky blue")
-    credit.pack(side=BOTTOM, anchor=SE)
-
-    # Center the window on the screen
-    window_width = 500
-    window_height = 500
-    screen_width = windows.winfo_screenwidth()
-    screen_height = windows.winfo_screenheight()
-    x = int((screen_width / 2) - (window_width / 2))
-    y = int((screen_height / 2) - (window_height / 2))
-    windows.geometry("{}x{}+{}+{}".format(window_width, window_height, x, y))
-    windows.config(bg="sky blue")  # Set background color
-    windows.resizable(False, False)  # Disable resizing
-    windows.title("File sorter")  # Set the window title
-    windows.mainloop()  # Start the GUI loop
+    enable_high_dpi()
+    TidyApp().mainloop()
