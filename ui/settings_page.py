@@ -7,7 +7,9 @@ from tkinter import ttk
 from settings import config_dir
 from sorter import MODE_CATEGORY, MODE_EXTENSION
 from subtitles import LANGUAGES, OpenSubtitles, SubtitleError
+from ui.intro import IntroPlayer, intro_available
 from ui.theme import COLORS as C
+from ui.theme import THEMES
 from ui.widgets import Card, PageHeader, ScrollFrame, open_in_file_manager
 
 API_KEY_URL = "https://www.opensubtitles.com/en/consumers"
@@ -30,7 +32,9 @@ class SettingsPage(ttk.Frame):
         PageHeader(page, "Settings", "Changes are saved as you make them.").grid(row=0, column=0, sticky="ew")
 
         # --- Sorting ---
-        body = self._card(page, 1, "Auto sort", "How files are sorted when they land in your folder.")
+        self._build_appearance(page)
+
+        body = self._card(page, 2, "Auto sort", "How files are sorted when they land in your folder.")
         self.mode_var = tk.StringVar(value=s.sort_mode)
         ttk.Radiobutton(body, text="By file type: one folder per extension (pdf/, jpg/, mkv/)",
                         style="Card.TRadiobutton", value=MODE_EXTENSION, variable=self.mode_var,
@@ -53,7 +57,7 @@ class SettingsPage(ttk.Frame):
             row=7, column=0, sticky="w", pady=(16, 0))
 
         # --- Subtitles ---
-        body = self._card(page, 2, "Subtitles",
+        body = self._card(page, 3, "Subtitles",
                           "Tidy downloads subtitles from OpenSubtitles.com. You need a free API key: sign in, "
                           "open “API consumers”, create one and paste it below.")
         link = tk.Label(body, text="Get a free API key  →", fg=C["accent"], bg=C["surface"], cursor="hand2",
@@ -104,7 +108,7 @@ class SettingsPage(ttk.Frame):
                   style="Card.Small.TLabel").grid(row=5, column=0, sticky="w", pady=(12, 0))
 
         # --- Grouping ---
-        body = self._card(page, 3, "Group similar", "Defaults for the Group similar page.")
+        body = self._card(page, 4, "Group similar", "Defaults for the Group similar page.")
         self.include_var = tk.BooleanVar(value=s.group_include_sorted)
         ttk.Checkbutton(body, text="Also look inside folders Tidy already sorted (mkv/, Videos/ …)",
                         style="Card.TCheckbutton", variable=self.include_var, command=self._general_changed).grid(
@@ -115,10 +119,74 @@ class SettingsPage(ttk.Frame):
             row=3, column=0, sticky="w", pady=(4, 0))
 
         # --- Data ---
-        body = self._card(page, 4, "Your data", f"Settings and undo history are kept in {config_dir()}")
+        body = self._card(page, 5, "Your data", f"Settings and undo history are kept in {config_dir()}")
         row = ttk.Frame(body, style="Card.TFrame")
         row.grid(row=2, column=0, sticky="w")
         ttk.Button(row, text="Open settings folder", command=self._open_config).pack(side="left")
+
+    def _build_appearance(self, page):
+        body = self._card(page, 1, "Appearance", "Pick a look. It changes straight away.")
+        tiles = ttk.Frame(body, style="Card.TFrame")
+        tiles.grid(row=2, column=0, sticky="w")
+        for i, (key, (name, description, colors)) in enumerate(THEMES.items()):
+            self._theme_tile(tiles, key, name, description, colors).grid(
+                row=i // 3, column=i % 3, padx=(0, 12), pady=(0, 12), sticky="nw")
+
+        row = ttk.Frame(body, style="Card.TFrame")
+        row.grid(row=3, column=0, sticky="w", pady=(4, 0))
+        self.intro_var = tk.BooleanVar(value=self.app.settings.play_intro)
+        ttk.Checkbutton(row, text="Play the bear intro when Tidy opens", style="Card.TCheckbutton",
+                        variable=self.intro_var, command=self._intro_changed).pack(side="left")
+        if intro_available():
+            ttk.Button(row, text="Play it now", style="CardGhost.TButton",
+                       command=lambda: IntroPlayer(self.app, on_done=lambda: None)).pack(side="left", padx=(12, 0))
+
+    def _theme_tile(self, parent, key, name, description, colors):
+        """Mini screenshot of the theme: sidebar, page, a card and an accent button."""
+        selected = key == self.app.theme_key
+        tile = tk.Frame(parent, bg=C["surface"], cursor="hand2", highlightthickness=2, bd=0,
+                        highlightbackground=C["accent"] if selected else C["border"],
+                        highlightcolor=C["accent"] if selected else C["border"])
+        preview = tk.Canvas(tile, width=176, height=92, highlightthickness=0, bd=0, bg=colors["bg"])
+        preview.pack(padx=8, pady=(8, 6))
+        preview.create_rectangle(0, 0, 44, 92, fill=colors["side_bg"], outline="")
+        preview.create_oval(10, 10, 22, 22, fill=colors["side_accent"], outline="")
+        for i, width in enumerate((26, 20, 23)):
+            y = 34 + i * 12
+            preview.create_rectangle(10, y, 10 + width, y + 4, fill=colors["side_muted"], outline="")
+        preview.create_rectangle(10, 33, 36, 39, fill=colors["side_accent"], outline="")
+        preview.create_rectangle(56, 12, 112, 18, fill=colors["text"], outline="")
+        preview.create_rectangle(56, 28, 166, 80, fill=colors["surface"], outline=colors["border"])
+        preview.create_rectangle(64, 38, 140, 42, fill=colors["muted"], outline="")
+        preview.create_rectangle(64, 48, 124, 52, fill=colors["faint"], outline="")
+        preview.create_rectangle(118, 62, 158, 72, fill=colors["accent"], outline="")
+
+        text = tk.Frame(tile, bg=C["surface"])
+        text.pack(fill="x", padx=10, pady=(0, 8))
+        title = tk.Label(text, text=("✓  " if selected else "") + name, bg=C["surface"],
+                         fg=C["accent_text"] if selected else C["text"], font=self.app.theme.fonts["section"],
+                         anchor="w")
+        title.pack(fill="x")
+        sub = tk.Label(text, text=description, bg=C["surface"], fg=C["muted"], font=self.app.theme.fonts["small"],
+                       anchor="w")
+        sub.pack(fill="x")
+
+        def choose(_event=None):
+            # Rebuilding destroys this page, so do it after the click handler returns
+            self.after(10, lambda: self.app.apply_theme(key))
+
+        def hover(on):
+            if not selected:
+                tile.configure(highlightbackground=C["border_strong"] if on else C["border"])
+        for widget in (tile, preview, text, title, sub):
+            widget.bind("<Button-1>", choose)
+            widget.bind("<Enter>", lambda _e: hover(True))
+            widget.bind("<Leave>", lambda _e: hover(False))
+        return tile
+
+    def _intro_changed(self):
+        self.app.settings.play_intro = self.intro_var.get()
+        self.app.save_settings()
 
     def _card(self, page, row, title, description):
         card = Card(page, padding=22)

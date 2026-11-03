@@ -38,7 +38,6 @@ class AutoSortPage(ttk.Frame):
         self.path_entry = ttk.Entry(body, textvariable=app.path_var)
         self.path_entry.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.path_entry.bind("<Return>", lambda _e: self.toggle())
-        app.path_var.trace_add("write", lambda *_: app.save_settings())
         self.browse_button = ttk.Button(body, text="Browse…", command=self.browse)
         self.browse_button.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(8, 0))
 

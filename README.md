@@ -16,6 +16,8 @@ an app for both mobile and PC.
 - **Share files**: get a link to any file on your computer; anyone with the link can download it
   while Tidy is open. Works on your Wi-Fi right away, and anywhere once you turn on the internet link.
 - **History and undo**: every move can be undone (Ctrl+Z for the latest).
+- **Themes**: Bear (default), Forest, Ocean, Blossom and a dark Midnight theme, plus a bear intro
+  animation made with Remotion (`intro/`).
 
 ## Run
 

@@ -18,8 +18,10 @@ from ui.groups import GroupsPage
 from ui.history_page import HistoryPage
 from ui.settings_page import SettingsPage
 from ui.share_page import SharePage
+from sharing import ShareServer, ShareStore
+from ui.intro import IntroPlayer, intro_available
 from ui.theme import COLORS as C
-from ui.theme import Theme, setup_styles
+from ui.theme import THEMES, Theme, setup_styles, use_theme
 from ui.widgets import StatusDot
 
 PAGES = [
@@ -78,21 +80,30 @@ class NavItem(tk.Frame):
             widget.configure(bg=bg)
         self.bar.configure(bg=C["side_accent"] if self.active else bg)
         self.icon.configure(fg=C["side_accent"] if self.active else C["side_muted"])
-        self.label.configure(fg="#FFFFFF" if self.active else C["side_text"])
+        self.label.configure(fg=C["side_active_text"] if self.active else C["side_text"])
 
 
 class TidyApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.settings = Settings.load()
+        self.theme_key = use_theme(self.settings.theme)
+        play_intro = self.settings.play_intro and intro_available()
+        if play_intro:
+            self.withdraw()  # the intro plays first; the window appears when it ends
         self.title("Tidy")
         self.configure(bg=C["bg"])
         self.minsize(940, 620)
         self._center(1120, 740)
 
-        self.settings = Settings.load()
         self.history = History(os.path.join(config_dir(), "history.json"))
+        # Long-lived sharing state lives on the app so it survives a theme switch
+        self.share_store = ShareStore(os.path.join(config_dir(), "shares.json"))
+        self.share_server = ShareServer(self.share_store, lambda kind, share: self.post(
+            lambda: self.pages["share"].on_server_event(kind, share)))
         self.events = queue.Queue()  # Background threads talk to the UI only through this
         self.path_var = tk.StringVar(value=self.settings.folder)
+        self.path_var.trace_add("write", lambda *_: self.save_settings())
         self._save_job = None
         self._toast_job = None
 
@@ -106,6 +117,15 @@ class TidyApp(tk.Tk):
             self.bind_all(f"<Control-Key-{i}>", lambda _e, k=key: self.show_page(k))
         self.bind_all("<Control-z>", self._undo_last)
         self.show_page("sort")
+        if play_intro:
+            IntroPlayer(self, on_done=self._after_intro)
+        else:
+            self.after(300, self.pages["sort"].maybe_autostart)
+
+    def _after_intro(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
         self.after(300, self.pages["sort"].maybe_autostart)
 
     # ---------- layout ----------
@@ -118,7 +138,7 @@ class TidyApp(tk.Tk):
         self.geometry(f"{width}x{height}+{x}+{y}")
 
     def _build(self):
-        sidebar = tk.Frame(self, bg=C["side_bg"], width=228)
+        sidebar = self.sidebar = tk.Frame(self, bg=C["side_bg"], width=228)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
@@ -127,7 +147,7 @@ class TidyApp(tk.Tk):
         logo = tk.Canvas(brand, width=30, height=30, bg=C["side_bg"], highlightthickness=0)
         logo.pack(side="left")
         self._draw_logo(logo)
-        tk.Label(brand, text="Tidy", font=self.theme.fonts["brand"], bg=C["side_bg"], fg="#FFFFFF").pack(
+        tk.Label(brand, text="Tidy", font=self.theme.fonts["brand"], bg=C["side_bg"], fg=C["side_brand"]).pack(
             side="left", padx=(10, 0))
 
         tk.Label(sidebar, text="ORGANISE", font=self.theme.fonts["small_strong"], bg=C["side_bg"],
@@ -176,13 +196,40 @@ class TidyApp(tk.Tk):
         self.toast_label = tk.Label(self.content, font=self.theme.fonts["body"], padx=16, pady=9, bd=0)
 
     def _draw_logo(self, canvas):
-        # Rounded square with three neatly stacked bars
-        r, s = 8, 30
-        points = [r, 0, s - r, 0, s, 0, s, r, s, s - r, s, s, s - r, s, r, s, 0, s, 0, s - r, 0, r, 0, 0]
-        canvas.create_polygon(points, smooth=True, fill=C["side_accent"], outline="")
-        for i, width in enumerate((16, 12, 8)):
-            y = 9 + i * 5
-            canvas.create_rectangle(7, y, 7 + width, y + 2.5, fill=C["side_bg"], outline="")
+        # Tidy's bear mascot: ears, head, muzzle, eyes and nose
+        fur, ink, muzzle = C["side_accent"], C["side_bg"], C["side_text"]
+        for x in (2, 18):
+            canvas.create_oval(x, 2, x + 10, 12, fill=fur, outline="")
+            canvas.create_oval(x + 3, 5, x + 7, 9, fill=ink, outline="")
+        canvas.create_oval(3, 5, 27, 29, fill=fur, outline="")
+        canvas.create_oval(9.5, 16, 20.5, 26, fill=muzzle, outline="")
+        canvas.create_oval(9, 12, 12, 15, fill=ink, outline="")
+        canvas.create_oval(18, 12, 21, 15, fill=ink, outline="")
+        canvas.create_oval(12.5, 17.5, 17.5, 21, fill=ink, outline="")
+
+    def apply_theme(self, key):
+        """Switch colours live: swap the palette, restyle ttk, rebuild the widgets."""
+        if key == self.theme_key or key not in THEMES:
+            return
+        page = self.current_page or "sort"
+        was_watching = self.pages["sort"].watcher is not None
+        for p in self.pages.values():
+            if hasattr(p, "detach"):
+                p.detach()
+        self.pages["sort"].shutdown()
+        self.sidebar.destroy()
+        self.content.destroy()
+
+        self.theme_key = use_theme(key)
+        self.settings.theme = self.theme_key
+        self.save_settings(0)
+        self.configure(bg=C["bg"])
+        setup_styles(self, self.theme)
+        self._build()
+        self.show_page(page)
+        if was_watching:
+            self.pages["sort"].toggle()
+        self.toast(f"{THEMES[self.theme_key][0]} theme on")
 
     def show_page(self, key):
         if self.current_page == key:
@@ -260,8 +307,8 @@ class TidyApp(tk.Tk):
     # ---------- feedback ----------
 
     def toast(self, text, tone="accent", ms=3200):
-        colors = {"accent": (C["accent"], "#FFFFFF"), "danger": (C["danger"], "#FFFFFF"),
-                  "neutral": (C["text"], "#FFFFFF")}
+        colors = {"accent": (C["accent"], C["on_accent"]), "danger": (C["danger"], C["on_accent"]),
+                  "neutral": (C["toast_neutral"], C["toast_text"])}
         bg, fg = colors.get(tone, colors["neutral"])
         self.toast_label.configure(text=text, bg=bg, fg=fg)
         self.toast_label.place(relx=1.0, rely=1.0, x=-28, y=-24, anchor="se")
@@ -293,7 +340,8 @@ class TidyApp(tk.Tk):
 
     def _on_close(self):
         self.pages["sort"].shutdown()
-        self.pages["share"].shutdown()
+        self.pages["share"].detach()
+        self.share_server.stop()
         if self._save_job:
             self.after_cancel(self._save_job)
         self.settings.folder = self.folder()

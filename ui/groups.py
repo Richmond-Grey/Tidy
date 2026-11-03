@@ -189,8 +189,8 @@ class GroupsPage(ttk.Frame):
 
         def done(result):
             files, groups, _leftovers = result
-            self._scan_finished()
             self.root_folder = root
+            self._scan_finished()
             self.pool = sorted(files, key=lambda p: os.path.basename(p).lower())
             self.groups = groups
             self.sub_status.clear()

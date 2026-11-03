@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from duplicates import find_duplicates, human_size, send_to_trash
+from ui.theme import COLORS as C
 from ui.widgets import PageHeader, Table, plural, short_path
 
 KEEP, REMOVE = "Keep", "Remove"
@@ -52,8 +53,8 @@ class DuplicatesPage(ttk.Frame):
                            show="tree headings", empty_text="Press “Find duplicates” to scan your folder.")
         self.table.grid(row=3, column=0, sticky="nsew")
         tree = self.table.tree
-        tree.tag_configure("remove", foreground="#B4432F")
-        tree.tag_configure("keep", foreground="#1F5446")
+        tree.tag_configure("remove", foreground=C["danger"])
+        tree.tag_configure("keep", foreground=C["accent_text"])
         tree.bind("<Double-1>", self._double_click)
         tree.bind("<space>", lambda _e: self.toggle_selected())
         tree.bind("<<TreeviewSelect>>", lambda _e: self._update_buttons())

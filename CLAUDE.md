@@ -12,6 +12,8 @@ called `Sorter`; the app itself is named **Tidy**. Features:
 - **Share files** – serves chosen files from this computer under random-token links; optional
   public tunnel (cloudflared, else `ssh` to localhost.run) for people outside the network.
 - **History / undo** – every move is journalled and can be put back (Ctrl+Z = latest).
+- **Themes + bear intro** – Bear (default), Forest, Ocean, Blossom, Midnight; switchable live in
+  Settings. A Remotion-made bear animation plays in a splash window at launch.
 
 The long-term plan is to ship it on both PC and mobile, so keep all logic UI-free.
 
@@ -31,10 +33,15 @@ Core (no UI imports):
 
 UI (Tkinter/ttk):
 - `main.py` – `TidyApp`: sidebar, page switching, `post` / `run_async`, toasts, undo.
-- `ui/theme.py` – all colours (`COLORS`), fonts, icon glyphs and ttk styles.
+- `ui/theme.py` – `THEMES` palettes, the live `COLORS` dict (`use_theme` swaps it in place), fonts,
+  icon glyphs and ttk styles. Never hard-code a colour elsewhere; add a palette key instead.
+- `ui/intro.py` – `IntroPlayer`, plays `assets/intro/frame_*.png` at 30 fps, skippable.
 - `ui/widgets.py` – `Card`, `Table`, `Pill`, `Dialog`, `ScrollFrame`, `hline`, helpers.
 - `ui/autosort.py`, `ui/groups.py`, `ui/duplicates_page.py`, `ui/share_page.py`,
   `ui/history_page.py`, `ui/settings_page.py` – one page each.
+- `intro/` – Remotion project for the intro (`src/BearIntro.tsx`). Re-export after edits:
+  `cd intro && npm run render && uv run --with pillow python export_frames.py` (→ `assets/intro/`,
+  256-colour PNGs, ~2.5 MB). Preview with `npm run dev`.
 - `glob/` – stray, accidentally committed venv binaries; not used. The real env is `.venv/` (uv).
 
 ## Running
@@ -62,6 +69,9 @@ Python 3.14 (see `pyproject.toml`); dependencies are `watchdog` and `send2trash`
 - Undo calls `sorter.suppress(path)` so a running watcher doesn't immediately re-sort restored files.
 - Sharing only ever serves files the user explicitly shared, looked up by token; never add
   directory listings or path-based routes. The tunnel only starts after the user confirms.
+- Theme switches (`TidyApp.apply_theme`) destroy and rebuild every page. Keep long-lived state on the
+  app (`history`, `share_store`, `share_server`), give pages a `detach()` for cleanup, and guard
+  `after` loops and `bind_all` handlers with `winfo_exists()`.
 - `ttk.Separator` renders too dark under clam; use `ui.widgets.hline`. `grid_slaves()` skips widgets
   hidden with `grid_remove`, so keep your own list if you need to show them again.
 
@@ -70,4 +80,6 @@ Python 3.14 (see `pyproject.toml`); dependencies are `watchdog` and `send2trash`
 No test suite yet. Core logic: call the functions directly on a `tempfile.mkdtemp()` folder (e.g.
 `grouping.find_groups([...names...])`, `FolderWatcher`). UI: set `TIDY_CONFIG_DIR` to a temp folder,
 create `main.TidyApp()`, drive pages with `app.after(...)`, and screenshot with Pillow's `ImageGrab`.
-Bind `ShareServer.host = "127.0.0.1"` in tests to avoid a firewall prompt.
+Bind `app.share_server.host = "127.0.0.1"` in tests to avoid a firewall prompt, and write
+`{"play_intro": false}` to the test settings.json to skip the intro. Don't call `update()` from
+inside `after` callbacks while the intro plays; it stalls the intro's tick loop.

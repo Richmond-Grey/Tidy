@@ -3,38 +3,88 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
 
-COLORS = {
-    "bg": "#F6F5F1",
-    "surface": "#FFFFFF",
-    "surface_alt": "#FAF9F6",
-    "segment": "#F1EFEA",
-    "border": "#E7E4DD",
-    "border_strong": "#D6D2C9",
-    "text": "#1B1A18",
-    "muted": "#77736B",
-    "faint": "#A7A39A",
-    "accent": "#2F6F5E",
-    "accent_active": "#255A4C",
-    "accent_soft": "#E5EFEB",
-    "accent_text": "#1F5446",
-    "danger": "#B4432F",
-    "danger_active": "#963624",
-    "danger_soft": "#F8E7E3",
-    "warn": "#A86A12",
-    "warn_soft": "#FBF0DC",
-    "info": "#3A5F95",
-    "info_soft": "#E6EDF7",
-    "watching": "#36A56E",
-    "idle": "#B9B5AC",
-    "select": "#E3EEEA",
-    # Sidebar
-    "side_bg": "#17231F",
-    "side_hover": "#21312C",
-    "side_active": "#2A3E37",
-    "side_text": "#D5DDD9",
-    "side_muted": "#7D8E87",
-    "side_accent": "#7FD1AE",
+def _palette(**colors):
+    """Fill in the keys most themes derive the same way."""
+    colors.setdefault("on_accent", "#FFFFFF")
+    colors.setdefault("on_accent_disabled", colors["surface"])
+    colors.setdefault("side_active_text", "#FFFFFF")
+    colors.setdefault("side_brand", "#FFFFFF")
+    colors.setdefault("toast_neutral", colors["text"])
+    colors.setdefault("toast_text", "#FFFFFF")
+    return colors
+
+
+# Each theme: display name, a one-line description and its colours.
+THEMES = {
+    "bear": ("Bear", "Warm honey and chocolate", _palette(
+        bg="#FAF5EC", surface="#FFFDF8", surface_alt="#FBF7EF", segment="#F3ECE0",
+        border="#ECE2D1", border_strong="#DACBB3",
+        text="#2A1E16", muted="#7A6857", faint="#B3A491",
+        accent="#9A5B2E", accent_active="#7E4823", accent_soft="#F6E8D6", accent_text="#7A431C",
+        danger="#B5402C", danger_active="#953222", danger_soft="#F8E5DF",
+        warn="#B07414", warn_soft="#FBEFD8", info="#3F6491", info_soft="#E6EDF6",
+        watching="#4E9A5B", idle="#C2B5A3", select="#F4E4CE",
+        side_bg="#2A1D15", side_hover="#36261C", side_active="#443023",
+        side_text="#EADDCB", side_muted="#9C8775", side_accent="#F4B942",
+    )),
+    "forest": ("Forest", "Calm pine green", _palette(
+        bg="#F6F5F1", surface="#FFFFFF", surface_alt="#FAF9F6", segment="#F1EFEA",
+        border="#E7E4DD", border_strong="#D6D2C9",
+        text="#1B1A18", muted="#77736B", faint="#A7A39A",
+        accent="#2F6F5E", accent_active="#255A4C", accent_soft="#E5EFEB", accent_text="#1F5446",
+        danger="#B4432F", danger_active="#963624", danger_soft="#F8E7E3",
+        warn="#A86A12", warn_soft="#FBF0DC", info="#3A5F95", info_soft="#E6EDF7",
+        watching="#36A56E", idle="#B9B5AC", select="#E3EEEA",
+        side_bg="#17231F", side_hover="#21312C", side_active="#2A3E37",
+        side_text="#D5DDD9", side_muted="#7D8E87", side_accent="#7FD1AE",
+    )),
+    "ocean": ("Ocean", "Cool sea blue", _palette(
+        bg="#F2F6F8", surface="#FFFFFF", surface_alt="#F7FAFB", segment="#E9F0F3",
+        border="#DCE6EB", border_strong="#C5D3DA",
+        text="#13222B", muted="#5D707B", faint="#9AAAB3",
+        accent="#1F6F99", accent_active="#185B7E", accent_soft="#E1EFF6", accent_text="#175877",
+        danger="#B8432F", danger_active="#983625", danger_soft="#F8E6E2",
+        warn="#A86A12", warn_soft="#FBF0DC", info="#3A5F95", info_soft="#E6EDF7",
+        watching="#2E9E77", idle="#AFBCC3", select="#DDEDF5",
+        side_bg="#0F2733", side_hover="#173544", side_active="#1E4254",
+        side_text="#D3E2EA", side_muted="#7E98A6", side_accent="#6CC5E8",
+    )),
+    "blossom": ("Blossom", "Soft cherry pink", _palette(
+        bg="#FBF4F4", surface="#FFFFFF", surface_alt="#FDF8F8", segment="#F5EAEB",
+        border="#EEDDDF", border_strong="#E0C8CB",
+        text="#2B1A1E", muted="#7E656A", faint="#B9A2A6",
+        accent="#B4486A", accent_active="#963A57", accent_soft="#F8E4EA", accent_text="#943955",
+        danger="#B8432F", danger_active="#983625", danger_soft="#F8E6E2",
+        warn="#A86A12", warn_soft="#FBF0DC", info="#4A5F95", info_soft="#E8EBF6",
+        watching="#3E9E6E", idle="#C6B3B7", select="#F7E1E8",
+        side_bg="#3A1E28", side_hover="#482633", side_active="#58313E",
+        side_text="#F1DDE3", side_muted="#A88591", side_accent="#F5A3BC",
+    )),
+    "midnight": ("Midnight", "Dark, easy on the eyes", _palette(
+        bg="#14161B", surface="#1C1F26", surface_alt="#21252D", segment="#262A33",
+        border="#2D323C", border_strong="#3B414D",
+        text="#E8EAED", muted="#9AA1AC", faint="#646B77",
+        accent="#7C9CFF", accent_active="#9BB3FF", accent_soft="#262F4A", accent_text="#AFC2FF",
+        danger="#F06A5A", danger_active="#F48577", danger_soft="#3A2226",
+        warn="#E0A24A", warn_soft="#3A2F1E", info="#6CB4F0", info_soft="#1E2E3E",
+        watching="#4CC38A", idle="#565D69", select="#2A3350",
+        side_bg="#0E1014", side_hover="#181B21", side_active="#1F232B",
+        side_text="#C9CED6", side_muted="#6B7280", side_accent="#7C9CFF",
+        on_accent="#0E1014", on_accent_disabled="#9AA1AC", toast_neutral="#E8EAED", toast_text="#14161B",
+    )),
 }
+DEFAULT_THEME = "bear"
+
+# The live palette. Modules import this dict, so switching themes updates it in place.
+COLORS = dict(THEMES[DEFAULT_THEME][2])
+
+
+def use_theme(key: str) -> str:
+    """Make `key` the live palette. Returns the key actually used."""
+    key = key if key in THEMES else DEFAULT_THEME
+    COLORS.clear()
+    COLORS.update(THEMES[key][2])
+    return key
 
 # Segoe Fluent Icons / MDL2 code points (Windows). Missing font -> no icons, text still works.
 ICONS = {
@@ -159,14 +209,14 @@ def setup_styles(root: tk.Misc, theme: Theme) -> None:
               foreground=[("disabled", c["faint"])])
     for name, base, active in (("Accent", c["accent"], c["accent_active"]),
                                ("Danger", c["danger"], c["danger_active"])):
-        style.configure(f"{name}.TButton", background=base, foreground="#FFFFFF", bordercolor=base,
+        style.configure(f"{name}.TButton", background=base, foreground=c["on_accent"], bordercolor=base,
                         lightcolor=base, darkcolor=base, font=f["section"], **common)
         style.map(f"{name}.TButton",
                   background=[("disabled", c["idle"]), ("pressed", active), ("active", active)],
                   bordercolor=[("disabled", c["idle"]), ("active", active)],
                   lightcolor=[("disabled", c["idle"]), ("active", active)],
                   darkcolor=[("disabled", c["idle"]), ("active", active)],
-                  foreground=[("disabled", "#F4F3EF")])
+                  foreground=[("disabled", c["on_accent_disabled"])])
     for name, bg in (("Ghost.TButton", c["bg"]), ("CardGhost.TButton", c["surface"])):
         style.configure(name, background=bg, foreground=c["accent_text"], bordercolor=bg, lightcolor=bg,
                         darkcolor=bg, padding=(8, 5), relief="flat", focusthickness=0)

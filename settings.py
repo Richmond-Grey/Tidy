@@ -30,6 +30,8 @@ class Settings:
     opensubtitles_username: str = ""
     opensubtitles_password: str = ""
     duplicates_recursive: bool = True
+    theme: str = "bear"
+    play_intro: bool = True                 # bear animation when Tidy opens
 
     @classmethod
     def path(cls) -> str:

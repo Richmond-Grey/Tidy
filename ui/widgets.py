@@ -114,8 +114,9 @@ class ScrollFrame(ttk.Frame):
         self.bind_all("<MouseWheel>", self._on_wheel, add="+")
 
     def _on_wheel(self, event):
-        # Only scroll when the pointer is over this area and it's actually visible
-        if not self.winfo_ismapped():
+        # Only scroll when the pointer is over this area and it's actually visible.
+        # bind_all outlives this widget (theme switches rebuild pages), hence the exists check.
+        if not self.winfo_exists() or not self.winfo_ismapped():
             return
         widget = self.winfo_containing(event.x_root, event.y_root)
         while widget is not None and widget is not self:

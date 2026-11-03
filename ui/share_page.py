@@ -6,8 +6,7 @@ import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 from duplicates import human_size
-from settings import config_dir
-from sharing import ShareServer, ShareStore, Tunnel, lan_ip
+from sharing import Tunnel, lan_ip
 from ui.theme import COLORS as C
 from ui.widgets import Card, hline, Dialog, PageHeader, StatusDot, Table, plural
 
@@ -19,8 +18,8 @@ class SharePage(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent, padding=(36, 30, 36, 24))
         self.app = app
-        self.store = ShareStore(os.path.join(config_dir(), "shares.json"))
-        self.server = ShareServer(self.store, self._server_event)
+        self.store = app.share_store
+        self.server = app.share_server
         self.tunnel: Tunnel | None = None
         self.columnconfigure(0, weight=1)
         self.rowconfigure(3, weight=1)
@@ -94,13 +93,11 @@ class SharePage(ttk.Frame):
         self._update_server_status()
         return True
 
-    def _server_event(self, kind, share):
-        # Background thread -> UI thread
-        def handle():
-            self.refresh()
-            if kind == "download_started":
-                self.app.toast(f"Someone is downloading {share.name}", "neutral")
-        self.app.post(handle)
+    def on_server_event(self, kind, share):
+        """Called on the UI thread when someone downloads a shared file."""
+        self.refresh()
+        if kind == "download_started":
+            self.app.toast(f"Someone is downloading {share.name}", "neutral")
 
     def _update_server_status(self):
         if self.server.running:
@@ -288,13 +285,16 @@ class SharePage(ttk.Frame):
 
     def _tick(self):
         # Keep "Expired" and "Expires in" fresh
+        if not self.winfo_exists():
+            return  # page was rebuilt for a theme change
         self.refresh()
         self.after(30_000, self._tick)
 
-    def shutdown(self):
+    def detach(self):
+        """Page is going away (theme change or quit). The server lives on the app; the tunnel doesn't."""
         if self.tunnel:
             self.tunnel.stop()
-        self.server.stop()
+            self.tunnel = None
 
 
 def _when(timestamp: float) -> str:
