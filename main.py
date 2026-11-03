@@ -1,29 +1,36 @@
-"""Desktop (Tkinter) front end for Tidy."""
+"""Desktop (Tkinter) front end for Tidy: window shell, sidebar and page switching.
+
+Pages live in ui/. All theme colours are in ui/theme.py (COLORS), all ttk styles in
+ui/theme.setup_styles.
+"""
 import os
 import queue
 import threading
-import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from tkinter import font as tkfont
+from tkinter import ttk
 
-from sorter import FolderWatcher, MoveResult
+from history import History
+from settings import Settings, config_dir
+from sorter import SortRules
+from ui.autosort import AutoSortPage
+from ui.duplicates_page import DuplicatesPage
+from ui.groups import GroupsPage
+from ui.history_page import HistoryPage
+from ui.settings_page import SettingsPage
+from ui.share_page import SharePage
+from ui.theme import COLORS as C
+from ui.theme import Theme, setup_styles
+from ui.widgets import StatusDot
 
-COLORS = {
-    "bg": "#F4F3EF",
-    "surface": "#FFFFFF",
-    "border": "#E2E0DA",
-    "text": "#1D1C1A",
-    "muted": "#6E6B64",
-    "accent": "#2C6E5A",
-    "accent_active": "#23584A",
-    "danger": "#B3412E",
-    "danger_active": "#963524",
-    "watching": "#2E9D63",
-    "idle": "#B5B1A8",
-    "row_alt": "#FAF9F6",
-    "select": "#E3EEEA",
-}
+PAGES = [
+    # key, label, icon, class
+    ("sort", "Auto sort", "sort", AutoSortPage),
+    ("group", "Group similar", "group", GroupsPage),
+    ("duplicates", "Duplicates", "duplicates", DuplicatesPage),
+    ("share", "Share files", "share", SharePage),
+    ("history", "History", "history", HistoryPage),
+    ("settings", "Settings", "settings", SettingsPage),
+]
 
 
 def enable_high_dpi():
@@ -35,287 +42,266 @@ def enable_high_dpi():
         pass
 
 
+class NavItem(tk.Frame):
+    """One row in the sidebar: accent bar, icon, label."""
+
+    def __init__(self, parent, theme, icon, text, command):
+        super().__init__(parent, bg=C["side_bg"], cursor="hand2")
+        self.command = command
+        self.active = False
+        self.bar = tk.Frame(self, width=3, bg=C["side_bg"])
+        self.bar.pack(side="left", fill="y")
+        self.icon = tk.Label(self, text=theme.icon(icon), font=theme.fonts["icon"], bg=C["side_bg"],
+                             fg=C["side_muted"], width=2)
+        self.icon.pack(side="left", padx=(14, 6), pady=9)
+        self.label = tk.Label(self, text=text, font=theme.fonts["body"], bg=C["side_bg"], fg=C["side_text"],
+                              anchor="w")
+        self.label.pack(side="left", fill="x", expand=True, pady=9)
+        self.badge = tk.Label(self, text="", font=theme.fonts["small_strong"], bg=C["side_bg"],
+                              fg=C["side_accent"])
+        self.badge.pack(side="right", padx=(0, 14))
+        for widget in (self, self.icon, self.label, self.badge):
+            widget.bind("<Button-1>", lambda _e: self.command())
+            widget.bind("<Enter>", lambda _e: self._paint(hover=True))
+            widget.bind("<Leave>", lambda _e: self._paint())
+
+    def set_active(self, active):
+        self.active = active
+        self._paint()
+
+    def set_badge(self, text):
+        self.badge.configure(text=text)
+
+    def _paint(self, hover=False):
+        bg = C["side_active"] if self.active else (C["side_hover"] if hover else C["side_bg"])
+        for widget in (self, self.icon, self.label, self.badge):
+            widget.configure(bg=bg)
+        self.bar.configure(bg=C["side_accent"] if self.active else bg)
+        self.icon.configure(fg=C["side_accent"] if self.active else C["side_muted"])
+        self.label.configure(fg="#FFFFFF" if self.active else C["side_text"])
+
+
 class TidyApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Tidy")
-        self.configure(bg=COLORS["bg"])
-        self.minsize(640, 520)
-        self._center(760, 600)
+        self.configure(bg=C["bg"])
+        self.minsize(940, 620)
+        self._center(1120, 740)
 
-        self.watcher = None
+        self.settings = Settings.load()
+        self.history = History(os.path.join(config_dir(), "history.json"))
         self.events = queue.Queue()  # Background threads talk to the UI only through this
-        self.moved_count = 0
-        self.path_var = tk.StringVar()
+        self.path_var = tk.StringVar(value=self.settings.folder)
+        self._save_job = None
+        self._toast_job = None
 
-        self._setup_fonts()
-        self._setup_styles()
+        self.theme = Theme(self)
+        setup_styles(self, self.theme)
         self._build()
-        self._set_state("idle")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._drain_events)
+        for i, (key, *_rest) in enumerate(PAGES, 1):
+            self.bind_all(f"<Control-Key-{i}>", lambda _e, k=key: self.show_page(k))
+        self.bind_all("<Control-z>", self._undo_last)
+        self.show_page("sort")
+        self.after(300, self.pages["sort"].maybe_autostart)
 
-    # ---------- setup ----------
+    # ---------- layout ----------
 
     def _center(self, width, height):
+        width = min(width, self.winfo_screenwidth() - 80)
+        height = min(height, self.winfo_screenheight() - 120)
         x = (self.winfo_screenwidth() - width) // 2
-        y = (self.winfo_screenheight() - height) // 2
+        y = (self.winfo_screenheight() - height) // 3
         self.geometry(f"{width}x{height}+{x}+{y}")
 
-    def _setup_fonts(self):
-        families = set(tkfont.families())
-        family = next((f for f in ("Segoe UI", "SF Pro Text", "Helvetica Neue", "Ubuntu")
-                       if f in families), tkfont.nametofont("TkDefaultFont").actual("family"))
-        for name in ("TkDefaultFont", "TkTextFont", "TkHeadingFont"):
-            tkfont.nametofont(name).configure(family=family, size=10)
-        self.fonts = {
-            "title": tkfont.Font(family=family, size=20, weight="bold"),
-            "section": tkfont.Font(family=family, size=11, weight="bold"),
-            "body": tkfont.Font(family=family, size=10),
-            "small": tkfont.Font(family=family, size=9),
-        }
-
-    def _setup_styles(self):
-        c = COLORS
-        style = ttk.Style(self)
-        style.theme_use("clam")
-
-        style.configure(".", background=c["bg"], foreground=c["text"], font=self.fonts["body"],
-                        bordercolor=c["border"], focuscolor=c["accent"])
-        style.configure("TFrame", background=c["bg"])
-        style.configure("Card.TFrame", background=c["surface"], relief="solid", borderwidth=1)
-        style.configure("TLabel", background=c["bg"], foreground=c["text"])
-        style.configure("Title.TLabel", font=self.fonts["title"])
-        style.configure("Muted.TLabel", foreground=c["muted"])
-        style.configure("Small.TLabel", foreground=c["muted"], font=self.fonts["small"])
-        style.configure("Card.TLabel", background=c["surface"])
-        style.configure("CardSection.TLabel", background=c["surface"], font=self.fonts["section"])
-        style.configure("CardMuted.TLabel", background=c["surface"], foreground=c["muted"])
-        style.configure("Section.TLabel", font=self.fonts["section"])
-
-        style.configure("TEntry", fieldbackground=c["surface"], bordercolor=c["border"],
-                        lightcolor=c["border"], darkcolor=c["border"], padding=(8, 6))
-        style.map("TEntry",
-                  bordercolor=[("focus", c["accent"])],
-                  lightcolor=[("focus", c["accent"])],
-                  fieldbackground=[("disabled", c["bg"])],
-                  foreground=[("disabled", c["muted"])])
-
-        button_common = dict(padding=(14, 7), borderwidth=1, focusthickness=0, relief="solid")
-        style.configure("TButton", background=c["surface"], foreground=c["text"],
-                        bordercolor=c["border"], lightcolor=c["border"], darkcolor=c["border"],
-                        **button_common)
-        style.map("TButton",
-                  background=[("disabled", c["bg"]), ("pressed", c["border"]), ("active", c["row_alt"])],
-                  foreground=[("disabled", c["muted"])])
-
-        for name, base, active in (("Accent", c["accent"], c["accent_active"]),
-                                   ("Danger", c["danger"], c["danger_active"])):
-            style.configure(f"{name}.TButton", background=base, foreground="#FFFFFF",
-                            bordercolor=base, lightcolor=base, darkcolor=base,
-                            font=self.fonts["section"], **button_common)
-            style.map(f"{name}.TButton",
-                      background=[("disabled", c["idle"]), ("pressed", active), ("active", active)],
-                      bordercolor=[("disabled", c["idle"]), ("active", active)],
-                      lightcolor=[("active", active)], darkcolor=[("active", active)])
-
-        row_height = self.fonts["body"].metrics("linespace") + 12
-        style.configure("Treeview", background=c["surface"], fieldbackground=c["surface"],
-                        foreground=c["text"], bordercolor=c["border"], borderwidth=0,
-                        rowheight=row_height)
-        style.map("Treeview", background=[("selected", c["select"])],
-                  foreground=[("selected", c["text"])])
-        style.configure("Treeview.Heading", background=c["surface"], foreground=c["muted"],
-                        font=self.fonts["small"], relief="flat", borderwidth=0, padding=(8, 6))
-        style.map("Treeview.Heading", background=[("active", c["surface"])])
-        style.configure("Vertical.TScrollbar", background=c["border"], troughcolor=c["surface"],
-                        bordercolor=c["surface"], arrowcolor=c["muted"], lightcolor=c["border"],
-                        darkcolor=c["border"], gripcount=0)
-
     def _build(self):
-        root = ttk.Frame(self, padding=(24, 20, 24, 14))
-        root.pack(fill="both", expand=True)
-        root.columnconfigure(0, weight=1)
-        root.rowconfigure(3, weight=1)
+        sidebar = tk.Frame(self, bg=C["side_bg"], width=228)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
 
-        # Header
-        header = ttk.Frame(root)
-        header.grid(row=0, column=0, sticky="ew")
-        ttk.Label(header, text="Tidy", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(header, text="Moves each file into a folder named after its type, and keeps doing it as new files arrive.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
+        brand = tk.Frame(sidebar, bg=C["side_bg"])
+        brand.pack(fill="x", padx=20, pady=(24, 26))
+        logo = tk.Canvas(brand, width=30, height=30, bg=C["side_bg"], highlightthickness=0)
+        logo.pack(side="left")
+        self._draw_logo(logo)
+        tk.Label(brand, text="Tidy", font=self.theme.fonts["brand"], bg=C["side_bg"], fg="#FFFFFF").pack(
+            side="left", padx=(10, 0))
 
-        # Folder card
-        card = ttk.Frame(root, style="Card.TFrame", padding=16)
-        card.grid(row=1, column=0, sticky="ew", pady=(18, 0))
-        card.columnconfigure(0, weight=1)
+        tk.Label(sidebar, text="ORGANISE", font=self.theme.fonts["small_strong"], bg=C["side_bg"],
+                 fg=C["side_muted"]).pack(anchor="w", padx=22, pady=(0, 6))
+        self.nav = {}
+        for key, label, icon, _cls in PAGES:
+            if key == "history":
+                tk.Label(sidebar, text="MANAGE", font=self.theme.fonts["small_strong"], bg=C["side_bg"],
+                         fg=C["side_muted"]).pack(anchor="w", padx=22, pady=(18, 6))
+            item = NavItem(sidebar, self.theme, icon, label, lambda k=key: self.show_page(k))
+            item.pack(fill="x")
+            self.nav[key] = item
 
-        ttk.Label(card, text="Folder to sort", style="CardSection.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w")
-        self.path_entry = ttk.Entry(card, textvariable=self.path_var)
-        self.path_entry.grid(row=1, column=0, sticky="ew", pady=(8, 0), ipady=2)
-        self.path_entry.bind("<Return>", lambda _e: self._toggle())
-        self.browse_button = ttk.Button(card, text="Browse…", command=self._browse)
-        self.browse_button.grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(8, 0))
+        # Watcher status card at the bottom of the sidebar
+        footer = tk.Frame(sidebar, bg=C["side_bg"])
+        footer.pack(side="bottom", fill="x", padx=16, pady=16)
+        status = tk.Frame(footer, bg=C["side_hover"], padx=12, pady=10)
+        status.pack(fill="x")
+        row = tk.Frame(status, bg=C["side_hover"])
+        row.pack(fill="x")
+        self.side_dot = StatusDot(row, C["side_hover"], size=9)
+        self.side_dot.pack(side="left")
+        self.side_status = tk.Label(row, text="Not watching", font=self.theme.fonts["small_strong"],
+                                    bg=C["side_hover"], fg=C["side_text"], anchor="w")
+        self.side_status.pack(side="left", padx=(8, 0), fill="x")
+        self.side_detail = tk.Label(status, text="Auto sort is off", font=self.theme.fonts["small"],
+                                    bg=C["side_hover"], fg=C["side_muted"], anchor="w", justify="left",
+                                    wraplength=170)
+        self.side_detail.pack(fill="x", pady=(4, 0))
+        tk.Label(footer, text="Made by Richmond", font=self.theme.fonts["small"], bg=C["side_bg"],
+                 fg=C["side_muted"]).pack(anchor="w", pady=(12, 0))
+        self.set_watch_status(False)
 
-        status_row = tk.Frame(card, bg=COLORS["surface"])
-        status_row.grid(row=2, column=0, sticky="w", pady=(14, 0))
-        self.status_dot = tk.Canvas(status_row, width=10, height=10, bg=COLORS["surface"],
-                                    highlightthickness=0)
-        self.status_dot.pack(side="left")
-        self._dot = self.status_dot.create_oval(1, 1, 9, 9, outline="")
-        self.status_label = ttk.Label(status_row, style="CardMuted.TLabel")
-        self.status_label.pack(side="left", padx=(8, 0))
+        # Pages
+        self.content = ttk.Frame(self)
+        self.content.pack(side="left", fill="both", expand=True)
+        self.content.rowconfigure(0, weight=1)
+        self.content.columnconfigure(0, weight=1)
+        self.pages = {}
+        for key, _label, _icon, cls in PAGES:
+            page = cls(self.content, self)
+            page.grid(row=0, column=0, sticky="nsew")
+            self.pages[key] = page
+        self.current_page = None
 
-        self.toggle_button = ttk.Button(card, command=self._toggle, width=16)
-        self.toggle_button.grid(row=2, column=1, sticky="e", padx=(8, 0), pady=(14, 0))
+        self.toast_label = tk.Label(self.content, font=self.theme.fonts["body"], padx=16, pady=9, bd=0)
 
-        # Activity header
-        activity_header = ttk.Frame(root)
-        activity_header.grid(row=2, column=0, sticky="ew", pady=(22, 8))
-        ttk.Label(activity_header, text="Activity", style="Section.TLabel").pack(side="left")
-        self.count_label = ttk.Label(activity_header, style="Muted.TLabel")
-        self.count_label.pack(side="left", padx=(10, 0))
-        ttk.Button(activity_header, text="Clear", command=self._clear_log).pack(side="right")
+    def _draw_logo(self, canvas):
+        # Rounded square with three neatly stacked bars
+        r, s = 8, 30
+        points = [r, 0, s - r, 0, s, 0, s, r, s, s - r, s, s, s - r, s, r, s, 0, s, 0, s - r, 0, r, 0, 0]
+        canvas.create_polygon(points, smooth=True, fill=C["side_accent"], outline="")
+        for i, width in enumerate((16, 12, 8)):
+            y = 9 + i * 5
+            canvas.create_rectangle(7, y, 7 + width, y + 2.5, fill=C["side_bg"], outline="")
 
-        # Activity log
-        log_card = ttk.Frame(root, style="Card.TFrame", padding=1)
-        log_card.grid(row=3, column=0, sticky="nsew")
-        log_card.columnconfigure(0, weight=1)
-        log_card.rowconfigure(0, weight=1)
-
-        self.log = ttk.Treeview(log_card, columns=("time", "file", "folder"), show="headings",
-                                selectmode="browse")
-        for column, heading, width, stretch in (("time", "TIME", 90, False),
-                                                ("file", "FILE", 300, True),
-                                                ("folder", "MOVED TO", 160, True)):
-            self.log.heading(column, text=heading, anchor="w")
-            self.log.column(column, width=width, minwidth=60, stretch=stretch, anchor="w")
-        self.log.tag_configure("alt", background=COLORS["row_alt"])
-        self.log.tag_configure("error", foreground=COLORS["danger"])
-        self.log.grid(row=0, column=0, sticky="nsew")
-
-        scrollbar = ttk.Scrollbar(log_card, orient="vertical", command=self.log.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.log.configure(yscrollcommand=scrollbar.set)
-
-        self.empty_label = ttk.Label(log_card, style="CardMuted.TLabel",
-                                     text="Sorted files will show up here.")
-        self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
-
-        # Footer
-        ttk.Label(root, text="Made by Richmond", style="Small.TLabel").grid(
-            row=4, column=0, sticky="e", pady=(10, 0))
-
-        self._update_count()
-
-    # ---------- actions ----------
-
-    def _browse(self):
-        folder = filedialog.askdirectory(title="Choose a folder to sort",
-                                         initialdir=self.path_var.get() or os.path.expanduser("~"))
-        if folder:
-            self.path_var.set(os.path.normpath(folder))
-
-    def _toggle(self):
-        if self.watcher:
-            self._stop()
+    def show_page(self, key):
+        if self.current_page == key:
             return
+        self.current_page = key
+        for k, item in self.nav.items():
+            item.set_active(k == key)
+        page = self.pages[key]
+        page.tkraise()
+        if hasattr(page, "on_show"):
+            page.on_show()
 
-        path = self.path_var.get().strip().strip('"')
-        if not path:
-            messagebox.showinfo("Choose a folder", "Pick a folder to sort first.", parent=self)
-            return
-        if not os.path.isdir(path):
-            messagebox.showerror("Folder not found", f"Couldn't find a folder at:\n{path}", parent=self)
-            return
+    # ---------- shared state ----------
 
-        self.path_var.set(os.path.normpath(path))
-        self.watcher = FolderWatcher(path, lambda result: self.events.put(("moved", result)))
-        self._set_state("starting")
-        threading.Thread(target=self._start_watcher, args=(self.watcher,), daemon=True).start()
+    def rules(self) -> SortRules:
+        return SortRules(mode=self.settings.sort_mode, ignore_patterns=list(self.settings.ignore_patterns))
 
-    def _start_watcher(self, watcher):
-        # Runs off the UI thread: the initial sort can take a while on big folders
-        try:
-            watcher.start()
-            self.events.put(("started", watcher))
-        except OSError as e:
-            self.events.put(("failed", (watcher, str(e))))
+    def folder(self) -> str:
+        return self.path_var.get().strip().strip('"')
 
-    def _stop(self):
-        if self.watcher:
-            self.watcher.stop()
-            self.watcher = None
-        self._set_state("idle")
+    def save_settings(self, delay=400):
+        """Debounced save so typing in a field doesn't hammer the disk."""
+        if self._save_job:
+            self.after_cancel(self._save_job)
 
-    def _clear_log(self):
-        self.log.delete(*self.log.get_children())
-        self.moved_count = 0
-        self._update_count()
+        def save():
+            self._save_job = None
+            self.settings.folder = self.folder()
+            try:
+                self.settings.save()
+            except OSError:
+                pass
+        self._save_job = self.after(delay, save)
 
-    def _on_close(self):
-        if self.watcher:
-            self.watcher.stop()
-        self.destroy()
+    def set_watch_status(self, watching: bool, detail: str = ""):
+        self.side_dot.set(C["watching"] if watching else C["idle"])
+        self.side_status.configure(text="Watching" if watching else "Not watching")
+        self.side_detail.configure(text=detail or ("Sorting new files as they arrive" if watching
+                                                   else "Auto sort is off"))
 
-    # ---------- UI updates ----------
+    def set_badge(self, key, text):
+        self.nav[key].set_badge(text)
+
+    # ---------- background work ----------
+
+    def post(self, fn):
+        """Run fn on the UI thread. Safe to call from any thread."""
+        self.events.put(fn)
+
+    def run_async(self, work, on_done=None, on_error=None):
+        """Run work() on a background thread, then on_done(result) / on_error(exc) on the UI thread."""
+        def runner():
+            try:
+                result = work()
+            except Exception as e:  # reported to the UI rather than lost on a dead thread
+                # Bind e now: Python deletes the except variable when the block ends
+                if on_error:
+                    self.post(lambda err=e: on_error(err))
+                else:
+                    self.post(lambda err=e: self.toast(f"Something went wrong: {err}", "danger"))
+                return
+            if on_done:
+                self.post(lambda: on_done(result))
+        threading.Thread(target=runner, daemon=True).start()
 
     def _drain_events(self):
         # Polled on the UI thread; the only place background events touch widgets
         try:
             while True:
-                kind, payload = self.events.get_nowait()
-                if kind == "moved":
-                    self._add_log_row(payload)
-                # Ignore events from a watcher that was stopped before it finished starting
-                elif kind == "started" and payload is self.watcher:
-                    self._set_state("watching")
-                elif kind == "failed" and payload[0] is self.watcher:
-                    self.watcher = None
-                    self._set_state("idle")
-                    messagebox.showerror("Couldn't start sorting", payload[1], parent=self)
+                self.events.get_nowait()()
         except queue.Empty:
             pass
-        self.after(100, self._drain_events)
+        self.after(80, self._drain_events)
 
-    def _add_log_row(self, result: MoveResult):
-        name = os.path.basename(result.source)
-        if result.error:
-            folder, tags = f"Failed: {result.error}", ("error",)
-        else:
-            folder, tags = os.path.basename(os.path.dirname(result.destination)) + os.sep, ()
-            self.moved_count += 1
-        if len(self.log.get_children()) % 2:
-            tags += ("alt",)
-        row = self.log.insert("", "end", values=(time.strftime("%H:%M:%S"), name, folder), tags=tags)
-        self.log.see(row)
-        self._update_count()
+    # ---------- feedback ----------
 
-    def _update_count(self):
-        n = self.moved_count
-        self.count_label.configure(text=f"{n} file{'s' if n != 1 else ''} sorted")
-        if self.log.get_children():
-            self.empty_label.place_forget()
-        else:
-            self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
+    def toast(self, text, tone="accent", ms=3200):
+        colors = {"accent": (C["accent"], "#FFFFFF"), "danger": (C["danger"], "#FFFFFF"),
+                  "neutral": (C["text"], "#FFFFFF")}
+        bg, fg = colors.get(tone, colors["neutral"])
+        self.toast_label.configure(text=text, bg=bg, fg=fg)
+        self.toast_label.place(relx=1.0, rely=1.0, x=-28, y=-24, anchor="se")
+        self.toast_label.lift()
+        if self._toast_job:
+            self.after_cancel(self._toast_job)
+        self._toast_job = self.after(ms, self.toast_label.place_forget)
 
-    def _set_state(self, state):
-        # One place to keep the status, button and inputs consistent with each other
-        watching_text = f"Watching {os.path.basename(self.path_var.get()) or self.path_var.get()}"
-        text, dot, button_text, button_style, button_enabled, inputs_enabled = {
-            "idle": ("Not running", COLORS["idle"], "Start sorting", "Accent.TButton", True, True),
-            "starting": ("Sorting existing files…", COLORS["accent"], "Starting…", "Accent.TButton", False, False),
-            "watching": (watching_text, COLORS["watching"], "Stop", "Danger.TButton", True, False),
-        }[state]
-        self.status_label.configure(text=text)
-        self.status_dot.itemconfigure(self._dot, fill=dot)
-        self.toggle_button.configure(text=button_text, style=button_style,
-                                     state="normal" if button_enabled else "disabled")
-        input_state = "normal" if inputs_enabled else "disabled"
-        self.path_entry.configure(state=input_state)
-        self.browse_button.configure(state=input_state)
+    def _undo_last(self, event=None):
+        if isinstance(event.widget if event else None, (tk.Entry, ttk.Entry)):
+            return
+        entry = next((e for e in self.history.entries() if not e.undone and e.undoable), None)
+        if not entry:
+            self.toast("Nothing to undo", "neutral")
+            return
+        self.undo([entry.id])
+
+    def undo(self, entry_ids):
+        def done(outcome):
+            if outcome.restored:
+                self.toast(f"Put back {len(outcome.restored)} file{'s' if len(outcome.restored) != 1 else ''}")
+            if outcome.errors:
+                self.toast(outcome.errors[0] + (f" (+{len(outcome.errors) - 1} more)"
+                                                if len(outcome.errors) > 1 else ""), "danger", 5000)
+            for page in self.pages.values():
+                if hasattr(page, "on_history_changed"):
+                    page.on_history_changed(entry_ids)
+        self.run_async(lambda: self.history.undo(entry_ids), done)
+
+    def _on_close(self):
+        self.pages["sort"].shutdown()
+        self.pages["share"].shutdown()
+        if self._save_job:
+            self.after_cancel(self._save_job)
+        self.settings.folder = self.folder()
+        try:
+            self.settings.save()
+        except OSError:
+            pass
+        self.destroy()
 
 
 if __name__ == "__main__":
